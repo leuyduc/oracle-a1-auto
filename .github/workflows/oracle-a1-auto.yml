@@ -2,7 +2,7 @@ name: Oracle A1 Free - Auto Retry (Singapore West)
 
 on:
   schedule:
-    # Try once every 2 hours, minute 17 UTC. 12 checks/day; free-tier friendly.
+    # Every 2 hours; 12 Telegram reports per day while no A1 exists.
     - cron: '17 */2 * * *'
   workflow_dispatch:
 
@@ -16,16 +16,74 @@ concurrency:
 jobs:
   try-a1:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
       - name: Checkout this private repo
         uses: actions/checkout@v4
       - name: Install official Oracle SDK
         run: python -m pip install --disable-pip-version-check -q 'oci>=2.150,<3'
       - name: Check existing A1 and attempt launch only if absent
+        id: a1
         env:
           OCI_CONFIG_TEXT: ${{ secrets.OCI_CONFIG_TEXT }}
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
           OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           OCI_SUBNET_OCID: ${{ secrets.OCI_SUBNET_OCID }}
         run: python try_a1.py
+
+      - name: Notify Telegram (every result, including failure)
+        if: ${{ always() }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          A1_RESULT: ${{ steps.a1.outputs.result }}
+          A1_STEP_OUTCOME: ${{ steps.a1.outcome }}
+          RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+
+          token = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
+          chat_id = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
+          if not token or not chat_id:
+              print('TELEGRAM_SETUP_ERROR: Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as repository secrets.')
+              sys.exit(1)
+
+          result = os.environ.get('A1_RESULT', '').strip()
+          run_link = os.environ.get('RUN_LINK', '')
+          messages = {
+              'NO_CAPACITY': '⏳ CHƯA TẠO ĐƯỢC — Singapore West AD-1 vẫn hết A1.Flex. Sẽ thử lại ở lượt kế tiếp.',
+              'RATE_LIMITED': '⚠️ ORACLE GIỚI HẠN TỐC ĐỘ — chưa tạo máy. Sẽ thử lại theo lịch.',
+              'INSTANCE_CREATED': '✅ ORACLE ĐÃ NHẬN YÊU CẦU TẠO VPS! Vào Compute > Instances xác nhận máy ở trạng thái RUNNING. Sau đó tắt workflow.',
+              'ALREADY_EXISTS': '✅ ĐÃ CÓ VPS A1.FLEX trong compartment! Không tạo trùng. Kiểm tra trạng thái máy, rồi tắt workflow.',
+              'ORACLE_ERROR': '❌ LỖI ORACLE API — chưa xác nhận tạo VPS. Mở log GitHub để xem chi tiết.',
+              'SETUP_ERROR': '❌ LỖI CẤU HÌNH — kiểm tra GitHub Secrets, subnet và Oracle API.',
+          }
+          body = messages.get(result, '❌ LƯỢT THỬ BỊ LỖI / CHƯA CHẠY XONG — kiểm tra log GitHub Actions.')
+          message = 'Oracle A1 Auto — Singapore West\n1 OCPU · 6 GB RAM\n' + body + '\n\nLog: ' + run_link
+          payload = json.dumps({'chat_id': chat_id, 'text': message}).encode('utf-8')
+          req = urllib.request.Request(
+              'https://api.telegram.org/bot' + token + '/sendMessage',
+              data=payload,
+              headers={'Content-Type': 'application/json'},
+              method='POST',
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=12) as response:
+                  response_data = json.load(response)
+              if response_data.get('ok') is not True:
+                  raise ValueError('Telegram returned ok=false')
+          except urllib.error.HTTPError as error:
+              # Do not print the exception URL: it contains the secret Bot Token.
+              print('TELEGRAM_FAILED: HTTP', error.code)
+              sys.exit(1)
+          except Exception as error:
+              # Never print error or URL, which might contain the Bot Token.
+              print('TELEGRAM_FAILED:', type(error).__name__)
+              sys.exit(1)
+          print('TELEGRAM_SENT:', result or 'WORKFLOW_ERROR')
+          PY

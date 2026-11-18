@@ -22,6 +22,15 @@ MEMORY_GB = 6.0
 NAME = "VPS-A"
 
 
+def finish(result, exit_code=0):
+    """Publish the machine-readable outcome to the workflow notification step."""
+    output_file = os.environ.get("GITHUB_OUTPUT")
+    if output_file:
+        with open(output_file, "a", encoding="utf-8") as file:
+            file.write(f"result={result}\n")
+    return exit_code
+
+
 def required(name):
     value = os.environ.get(name, "").strip()
     if not value:
@@ -76,7 +85,7 @@ def main():
             for instance in current_a1:
                 print(f"ALREADY_EXISTS: {instance.display_name}, status={instance.lifecycle_state}, OCID={instance.id}")
             print("STOP: An A1.Flex already exists. No new instance requested.")
-            return 0
+            return finish("ALREADY_EXISTS")
 
         subnet = network.get_subnet(subnet_id).data
         if subnet.prohibit_public_ip_on_vnic:
@@ -137,19 +146,19 @@ def main():
             message = (error.message or "").lower()
             if "out of host capacity" in message or "out of capacity" in message:
                 print("NO_CAPACITY: Singapore West AD-1 is full. Next scheduled run will try again.")
-                return 0
+                return finish("NO_CAPACITY")
             if error.status == 429:
                 print("RATE_LIMITED: Oracle asked us to slow down. Next scheduled run will try again.")
-                return 0
+                return finish("RATE_LIMITED")
             print(f"ORACLE_ERROR: HTTP {error.status}, code={error.code}, message={error.message}")
-            return 1
+            return finish("ORACLE_ERROR", 1)
 
         instance = response.data
         print(f"INSTANCE_CREATED: {instance.id}")
         print(f"INSTANCE_NAME: {instance.display_name}")
         print(f"STATUS: {instance.lifecycle_state}. Check Oracle Compute > Instances for RUNNING / Public IP.")
         print("Future runs will see the existing A1 and will not create another. Disable the workflow when ready.")
-        return 0
+        return finish("INSTANCE_CREATED")
 
 
 if __name__ == "__main__":
@@ -157,4 +166,4 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception as error:
         print(f"SETUP_ERROR: {type(error).__name__}: {error}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(finish("SETUP_ERROR", 1))

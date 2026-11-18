@@ -2,8 +2,7 @@ name: Oracle A1 Free - Auto Retry (Singapore West)
 
 on:
   schedule:
-    # Every 2 hours; 12 Telegram reports per day while no A1 exists.
-    - cron: '17 */2 * * *'
+    - cron: '7,17,27,37,47,57 * * * *'
   workflow_dispatch:
 
 permissions:
